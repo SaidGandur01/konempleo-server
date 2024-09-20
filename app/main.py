@@ -5,6 +5,7 @@ from app.company.companyController import companyRouter
 from app.user.userController import userRouter
 from app.auth.authController import authRouter
 from app.offer.offerController import offerRouter
+from app.health.healthController import healthRouter
 
 description = """
 All these configurations are suggested in the doc and
@@ -35,3 +36,4 @@ app.include_router(companyRouter)
 app.include_router(userRouter)
 app.include_router(authRouter)
 app.include_router(offerRouter)
+app.include_router(healthRouter)

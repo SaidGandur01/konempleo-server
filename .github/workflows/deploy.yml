@@ -1,0 +1,84 @@
+name: Build and Deploy BackendApp to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  # Setting an environment variable with the value of a configuration variable
+  ECR_BACKEND_IMAGE: ${{ vars.ECR_BACKEND_IMAGE }}
+  AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_BACKEND_SERVICE: ${{ vars.ECS_BACKEND_SERVICE }}
+  RDS_USER: ${{ vars.RDS_USER }}
+  RDS_PASSWORD: ${{ vars.RDS_PASSWORD }}
+  RDS_HOST: ${{ vars.RDS_HOST }}
+  RDS_PORT: ${{ vars.RDS_PORT }}
+  RDS_NAME: ${{ vars.RDS_NAME }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Create env file
+        run: |
+          touch app/.env
+          echo DB_USER="$RDS_USER" >> app/.env
+          echo DB_PASSWORD="$RDS_PASSWORD" >> app/.env
+          echo DB_HOST="$RDS_HOST" >> app/.env
+          echo DB_PORT=$RDS_PORT >> app/.env
+          echo DB_NAME="$RDS_NAME" >> app/.env
+
+      - name: Set up QEMU for x86_64
+        run: |
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        if: runner.os == 'Linux'
+
+      - name: Set up Docker for x86_64
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: linux/x86_64
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t konempleo .
+
+      - name: Tag Docker image with ECS task definition
+        run: |
+          docker tag konempleo:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_BACKEND_IMAGE:latest
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_BACKEND_IMAGE:latest
+
+      - name: Deploy to EC2 instance via SSH
+        run: |
+          echo "${{ secrets.AWS_PEM_KEY }}" > konempleo.pem
+          chmod 400 konempleo.pem
+          ssh -i "konempleo.pem" -tt ec2-user@ec2-3-144-33-2.us-east-2.compute.amazonaws.com <<EOF
+          export DOCKER_IMAGE=$(docker ps -a -q --filter="name=konempleo")
+          docker stop $DOCKER_IMAGE
+          docker rm $DOCKER_IMAGE
+          aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+          docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_BACKEND_IMAGE:latest
+          docker run -d --name konempleo -p 8888:443 ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_BACKEND_IMAGE:latest
+          EOF
